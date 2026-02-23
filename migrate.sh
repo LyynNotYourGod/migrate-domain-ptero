@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# PTERODACTYL MIGRATOR v4.0
-# Auto-detect | Zero Manual Config | Installer.se Support
+# PTERODACTYL MIGRATOR v5.0
+# Support: Single Domain + Dual Domain (Panel & Wings terpisah)
 # ==========================================
 
 set -e
@@ -14,110 +14,106 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# ==========================================
-# UTILS
-# ==========================================
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 info() { echo -e "${CYAN}[*]${NC} $1"; }
 
-# ==========================================
-# DETECT DOMAIN (MULTI-SOURCE)
-# ==========================================
-detect_domain() {
-    local detected=""
-    
-    # 1. Dari .env Panel
-    if [ -f /var/www/pterodactyl/.env ]; then
-        detected=$(grep APP_URL /var/www/pterodactyl/.env 2>/dev/null | sed -E 's|.*https?://||g' | tr -d '/' | head -1)
-        [ -n "$detected" ] && { echo "$detected"; return; }
-    fi
-    
-    # 2. Dari Wings config
-    if [ -f /etc/pterodactyl/config.yml ]; then
-        detected=$(grep "remote:" /etc/pterodactyl/config.yml 2>/dev/null | sed -E 's|.*https?://||g' | awk '{print $1}')
-        [ -n "$detected" ] && { echo "$detected"; return; }
-    fi
-    
-    # 3. Dari Nginx server_name
-    local nginx_conf="/etc/nginx/sites-available/pterodactyl.conf"
-    if [ -f "$nginx_conf" ]; then
-        detected=$(grep "server_name" "$nginx_conf" | head -1 | sed 's/.*server_name \(.*\);/\1/' | awk '{print $1}')
-        [ -n "$detected" ] && { echo "$detected"; return; }
-    fi
-    
-    # 4. Dari Database
-    if [ -f /var/www/pterodactyl/.env ]; then
-        cd /var/www/pterodactyl
-        local db_user=$(grep DB_USERNAME .env | cut -d= -f2)
-        local db_pass=$(grep DB_PASSWORD .env | cut -d= -f2)
-        local db_name=$(grep DB_DATABASE .env | cut -d= -f2)
-        detected=$(mysql -u"$db_user" -p"$db_pass" "$db_name" -N -e "SELECT fqdn FROM nodes WHERE fqdn IS NOT NULL LIMIT 1" 2>/dev/null || echo "")
-        [ -n "$detected" ] && { echo "$detected"; return; }
-    fi
-    
-    echo ""
-}
-
-# ==========================================
-# MAIN
-# ==========================================
 clear
 echo -e "${BLUE}╔════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     PTERODACTYL DOMAIN MIGRATOR v4.0           ║${NC}"
-echo -e "${BLUE}║  Auto-detect • Zero-config • Installer.se      ║${NC}"
+echo -e "${BLUE}║  PTERODACTYL DOMAIN MIGRATOR v5.0              ║${NC}"
+echo -e "${BLUE}║  Support: Single & Dual Domain Setup           ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════╝${NC}"
 echo ""
 
 [ "$EUID" -ne 0 ] && error "Run as root (sudo)"
 
-# Detect old domain
-info "Detecting current domain..."
-OLD_DOMAIN=$(detect_domain)
+# ==========================================
+# DETECT CURRENT DOMAINS
+# ==========================================
+info "Scanning current configuration..."
 
-if [ -z "$OLD_DOMAIN" ]; then
-    warn "Cannot auto-detect domain!"
-    read -p "Enter current domain: " OLD_DOMAIN
-    [ -z "$OLD_DOMAIN" ] && error "Domain required!"
-else
-    log "Found: $OLD_DOMAIN"
+# Detect Panel domain (dari .env)
+PANEL_OLD=""
+if [ -f /var/www/pterodactyl/.env ]; then
+    PANEL_OLD=$(grep APP_URL /var/www/pterodactyl/.env 2>/dev/null | sed -E 's|.*https?://||g' | tr -d '/' | head -1)
 fi
 
-# Input new domain
-echo ""
-read -p "Enter NEW domain: " NEW_DOMAIN
-[ -z "$NEW_DOMAIN" ] && error "New domain required!"
+# Detect Wings domain (dari config.yml atau database)
+WINGS_OLD=""
+if [ -f /etc/pterodactyl/config.yml ]; then
+    WINGS_OLD=$(grep "remote:" /etc/pterodactyl/config.yml 2>/dev/null | sed -E 's|.*https?://||g' | awk '{print $1}')
+fi
 
-# Detect IP
+# Kalau sama, tampilin sekali aja
+if [ "$PANEL_OLD" = "$WINGS_OLD" ] && [ -n "$PANEL_OLD" ]; then
+    echo -e "  Current Domain (Panel + Wings): ${YELLOW}$PANEL_OLD${NC}"
+    SETUP_TYPE="single"
+else
+    [ -n "$PANEL_OLD" ] && echo -e "  Current Panel: ${YELLOW}$PANEL_OLD${NC}"
+    [ -n "$WINGS_OLD" ] && echo -e "  Current Wings: ${YELLOW}$WINGS_OLD${NC}"
+    SETUP_TYPE="dual"
+fi
+
+# ==========================================
+# INPUT NEW DOMAINS
+# ==========================================
+echo ""
+echo -e "${CYAN}Select Setup Type:${NC}"
+echo "1. Single Domain (Panel & Wings pakai domain sama)"
+echo "2. Dual Domain (Panel & Wings domain terpisah)"
+echo ""
+read -p "Pilih (1/2) [default: 1]: " SETUP_CHOICE
+SETUP_CHOICE=${SETUP_CHOICE:-1}
+
+if [ "$SETUP_CHOICE" = "1" ]; then
+    # SINGLE DOMAIN
+    echo ""
+    read -p "Enter NEW Domain (Panel + Wings): " NEW_DOMAIN
+    [ -z "$NEW_DOMAIN" ] && error "Domain required!"
+    
+    PANEL_NEW="$NEW_DOMAIN"
+    WINGS_NEW="$NEW_DOMAIN"
+    
+    log "Mode: Single Domain ($NEW_DOMAIN)"
+else
+    # DUAL DOMAIN
+    echo ""
+    read -p "Enter NEW Panel Domain (e.g., panel.baru.com): " PANEL_NEW
+    read -p "Enter NEW Wings Domain (e.g., node1.baru.com): " WINGS_NEW
+    
+    [ -z "$PANEL_NEW" ] && error "Panel domain required!"
+    [ -z "$WINGS_NEW" ] && error "Wings domain required!"
+    
+    log "Mode: Dual Domain"
+    log "Panel: $PANEL_NEW"
+    log "Wings: $WINGS_NEW"
+fi
+
 SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
 info "Server IP: $SERVER_IP"
 
 echo ""
-echo -e "${YELLOW}Migration:${NC} ${RED}$OLD_DOMAIN${NC} → ${GREEN}$NEW_DOMAIN${NC}"
 read -p "Continue? (y/n): " confirm
 [ "$confirm" != "y" ] && exit 0
 
 # ==========================================
-# STEP 1: Panel Config
+# UPDATE PANEL (APP_URL)
 # ==========================================
-info "Step 1/6: Updating Panel configuration..."
+info "Updating Panel configuration..."
 cd /var/www/pterodactyl
 
 cp .env .env.backup.$(date +%Y%m%d_%H%M%S)
-sed -i "s|APP_URL=.*|APP_URL=https://$NEW_DOMAIN|g" .env
+sed -i "s|APP_URL=.*|APP_URL=https://$PANEL_NEW|g" .env
 
-# Clear caches
 php artisan config:clear >/dev/null 2>&1
 php artisan cache:clear >/dev/null 2>&1
-php artisan view:clear >/dev/null 2>&1
-
-log "Panel config updated"
+log "Panel URL updated to https://$PANEL_NEW"
 
 # ==========================================
-# STEP 2: Database
+# UPDATE DATABASE (WINGS FQDN)
 # ==========================================
-info "Step 2/6: Updating Database..."
+info "Updating Database nodes..."
 
 DB_HOST=$(grep DB_HOST .env | cut -d= -f2)
 DB_PORT=$(grep DB_PORT .env | cut -d= -f2)
@@ -125,139 +121,135 @@ DB_NAME=$(grep DB_DATABASE .env | cut -d= -f2)
 DB_USER=$(grep DB_USERNAME .env | cut -d= -f2)
 DB_PASS=$(grep DB_PASSWORD .env | cut -d= -f2)
 
+# Update FQDN di database ke Wings domain baru
 mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<EOF 2>/dev/null
-UPDATE nodes SET fqdn='$NEW_DOMAIN', scheme='https', behind_proxy=0 WHERE fqdn='$OLD_DOMAIN';
-UPDATE nodes SET fqdn='$NEW_DOMAIN', scheme='https' WHERE id=1;
+UPDATE nodes SET fqdn='$WINGS_NEW', scheme='https', behind_proxy=0 WHERE fqdn='$WINGS_OLD' OR fqdn='$PANEL_OLD';
+UPDATE nodes SET fqdn='$WINGS_NEW', scheme='https' WHERE id=1;
 EOF
 
-log "Database nodes updated"
+log "Wings FQDN in database updated to $WINGS_NEW"
 
 # ==========================================
-# STEP 3: Nginx
+# UPDATE NGINX (PANEL DOMAIN)
 # ==========================================
-info "Step 3/6: Updating Web Server..."
+info "Updating Nginx for Panel..."
 
 NGINX_CONF="/etc/nginx/sites-available/pterodactyl.conf"
 if [ -f "$NGINX_CONF" ]; then
     cp "$NGINX_CONF" "$NGINX_CONF.backup.$(date +%Y%m%d)"
     
-    # Replace domain
-    sed -i "s/$OLD_DOMAIN/$NEW_DOMAIN/g" "$NGINX_CONF"
+    # Replace domain lama ke Panel domain baru
+    if [ "$SETUP_TYPE" = "single" ] && [ -n "$PANEL_OLD" ]; then
+        sed -i "s/$PANEL_OLD/$PANEL_NEW/g" "$NGINX_CONF"
+    else
+        # Kalau dual domain, ganti semua domain lama ke Panel domain
+        sed -i "s/server_name .*/server_name $PANEL_NEW;/g" "$NGINX_CONF"
+    fi
     
-    # Update SSL paths
-    sed -i "s|ssl_certificate /etc/letsencrypt/live/[^/]*/fullchain.pem|ssl_certificate /etc/letsencrypt/live/$NEW_DOMAIN/fullchain.pem|g" "$NGINX_CONF"
-    sed -i "s|ssl_certificate_key /etc/letsencrypt/live/[^/]*/privkey.pem|ssl_certificate_key /etc/letsencrypt/live/$NEW_DOMAIN/privkey.pem|g" "$NGINX_CONF"
+    # Update SSL paths ke Panel domain
+    sed -i "s|ssl_certificate /etc/letsencrypt/live/[^/]*/fullchain.pem|ssl_certificate /etc/letsencrypt/live/$PANEL_NEW/fullchain.pem|g" "$NGINX_CONF"
+    sed -i "s|ssl_certificate_key /etc/letsencrypt/live/[^/]*/privkey.pem|ssl_certificate_key /etc/letsencrypt/live/$PANEL_NEW/privkey.pem|g" "$NGINX_CONF"
     
-    log "Nginx updated"
-else
-    warn "Nginx config not found!"
+    log "Nginx config updated"
 fi
 
 # ==========================================
-# STEP 4: SSL Certificate
+# SSL CERTIFICATES
 # ==========================================
-info "Step 4/6: Generating SSL Certificate..."
+info "Setting up SSL Certificates..."
 
-apt install -y certbot python3-certbot-nginx snapd >/dev/null 2>&1 || true
+apt install -y certbot python3-certbot-nginx >/dev/null 2>&1 || true
 
-# Stop nginx to free port 80
+# Dapatkan cert untuk Panel (selalu)
 systemctl stop nginx
+certbot certonly --standalone -d "$PANEL_NEW" --agree-tos --non-interactive --email admin@$PANEL_NEW >/dev/null 2>&1 && \
+    log "SSL for Panel ($PANEL_NEW) obtained" || \
+    warn "SSL for Panel failed (cek DNS)"
 
-# Get cert
-if certbot certonly --standalone -d "$NEW_DOMAIN" --agree-tos --non-interactive --email admin@$NEW_DOMAIN >/dev/null 2>&1; then
-    log "SSL certificate obtained"
-else
-    systemctl start nginx
-    error "SSL failed! Check DNS A record: $NEW_DOMAIN → $SERVER_IP"
+# Kalau Dual Domain, dapatkan cert untuk Wings juga
+if [ "$SETUP_CHOICE" = "2" ] && [ "$WINGS_NEW" != "$PANEL_NEW" ]; then
+    certbot certonly --standalone -d "$WINGS_NEW" --agree-tos --non-interactive --email admin@$WINGS_NEW >/dev/null 2>&1 && \
+        log "SSL for Wings ($WINGS_NEW) obtained" || \
+        warn "SSL for Wings failed (cek DNS A record: $WINGS_NEW → $SERVER_IP)"
 fi
 
 systemctl start nginx
 
 # ==========================================
-# STEP 5: Wings (FULL RESET)
+# UPDATE WINGS CONFIG
 # ==========================================
-info "Step 5/6: Rebuilding Wings..."
+info "Rebuilding Wings configuration..."
 
-# Stop and clear
 systemctl stop wings
 rm -rf /var/lib/pterodactyl/certificates/*
 rm -rf /root/.local/share/pterodactyl/*
-rm -rf /tmp/pterodactyl/*
 
-# Backup old config
-if [ -f /etc/pterodactyl/config.yml ]; then
-    cp /etc/pterodactyl/config.yml /etc/pterodactyl/config.yml.bak.$(date +%Y%m%d)
-fi
+# Backup
+[ -f /etc/pterodactyl/config.yml ] && cp /etc/pterodactyl/config.yml /etc/pterodactyl/config.yml.bak.$(date +%Y%m%d)
 
-# Generate new wings config
-cd /var/www/pterodactyl
+# Rebuild config via Panel
 php artisan p:node:reconfigure --node=1 > /tmp/wings_reconfig.txt 2>&1
 
-# Extract and run configure command
+# Jalankan configure command
 CONFIGURE_CMD=$(grep -o "./wings configure.*" /tmp/wings_reconfig.txt | head -1)
-
 if [ -n "$CONFIGURE_CMD" ]; then
-    cd /usr/local/bin || cd /etc/pterodactyl
-    eval "$CONFIGURE_CMD" 2>/dev/null || {
-        warn "Auto-configure failed, attempting manual..."
-        wings configure --panel-url "https://$NEW_DOMAIN" --token "$(cd /var/www/pterodactyl && php artisan tinker --execute="echo app('encrypter')->encryptString('1');" 2>/dev/null || echo "manual-setup-required")" --node 1 2>/dev/null || true
-    }
+    cd /usr/local/bin 2>/dev/null || cd /etc/pterodactyl
+    eval "$CONFIGURE_CMD" 2>/dev/null || warn "Auto-configure failed"
 else
-    warn "Could not extract configure command"
+    warn "Configure command not found"
 fi
 
-# Ensure SSL paths correct in config
+# Update SSL paths di config.yml Wings
 if [ -f /etc/pterodactyl/config.yml ]; then
-    sed -i "s|/etc/letsencrypt/live/[^/]*/fullchain.pem|/etc/letsencrypt/live/$NEW_DOMAIN/fullchain.pem|g" /etc/pterodactyl/config.yml
-    sed -i "s|/etc/letsencrypt/live/[^/]*/privkey.pem|/etc/letsencrypt/live/$NEW_DOMAIN/privkey.pem|g" /etc/pterodactyl/config.yml
+    # Remote URL ke Panel
+    sed -i "s|remote: https://.*|remote: https://$PANEL_NEW|g" /etc/pterodactyl/config.yml
+    
+    # SSL cert ke Wings domain (kalau dual) atau Panel domain (kalau single)
+    if [ "$SETUP_CHOICE" = "2" ]; then
+        sed -i "s|/etc/letsencrypt/live/[^/]*/fullchain.pem|/etc/letsencrypt/live/$WINGS_NEW/fullchain.pem|g" /etc/pterodactyl/config.yml
+        sed -i "s|/etc/letsencrypt/live/[^/]*/privkey.pem|/etc/letsencrypt/live/$WINGS_NEW/privkey.pem|g" /etc/pterodactyl/config.yml
+    else
+        sed -i "s|/etc/letsencrypt/live/[^/]*/fullchain.pem|/etc/letsencrypt/live/$PANEL_NEW/fullchain.pem|g" /etc/pterodactyl/config.yml
+        sed -i "s|/etc/letsencrypt/live/[^/]*/privkey.pem|/etc/letsencrypt/live/$PANEL_NEW/privkey.pem|g" /etc/pterodactyl/config.yml
+    fi
 fi
 
-log "Wings rebuilt"
+log "Wings config rebuilt"
 
 # ==========================================
-# STEP 6: Restart Everything
+# RESTART SERVICES
 # ==========================================
-info "Step 6/6: Finalizing..."
+info "Restarting services..."
 
-# Test nginx
 nginx -t && systemctl reload nginx || systemctl restart nginx
-
-# Restart PHP-FPM (detect version)
-PHP_FPM=$(systemctl list-units --type=service | grep -oP 'php[0-9.]+-fpm' | head -1)
-[ -n "$PHP_FPM" ] && systemctl restart "$PHP_FPM"
-
-# Restart wings
+systemctl restart php8.1-fpm 2>/dev/null || systemctl restart php8.2-fpm 2>/dev/null || true
 systemctl restart wings
 
-# Clear queues
-cd /var/www/pterodactyl
 php artisan queue:restart >/dev/null 2>&1 || true
 php artisan up >/dev/null 2>&1 || true
 
-log "All services restarted"
-
 # ==========================================
-# DONE
+# SUMMARY
 # ==========================================
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║        MIGRATION COMPLETE!                     ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "🌐 Panel URL: ${CYAN}https://$NEW_DOMAIN${NC}"
-echo -e "🖥️  Wings:     ${CYAN}Reconfigured${NC}"
-echo ""
 
-# Status check
-sleep 2
-if systemctl is-active --quiet wings; then
-    echo -e "✅ Wings Status: ${GREEN}Running${NC}"
-    echo -e "⏳ Wait 2-5 minutes for 'Heartbeat' to turn green in Panel"
+if [ "$SETUP_CHOICE" = "1" ]; then
+    echo -e "🌐 Panel URL:  ${CYAN}https://$PANEL_NEW${NC}"
+    echo -e "🖥️  Wings FQDN: ${CYAN}$WINGS_NEW${NC} (same as Panel)"
 else
-    echo -e "⚠️  Wings Status: ${RED}Check needed${NC}"
-    echo -e "   Debug: ${YELLOW}journalctl -u wings -n 20${NC}"
+    echo -e "🌐 Panel URL:  ${CYAN}https://$PANEL_NEW${NC}"
+    echo -e "🖥️  Wings FQDN: ${CYAN}$WINGS_NEW${NC} (separate domain)"
 fi
 
 echo ""
-echo -e "${YELLOW}Note:${NC} If Wings stays red, go to Admin → Nodes → Configuration"
-echo -e "      and click 'Reset Daemon Token', then run this script again."
+sleep 2
+systemctl is-active --quiet wings && \
+    echo -e "✅ Wings Status: ${GREEN}Running${NC}" || \
+    echo -e "⚠️  Wings Status: ${RED}Check logs: journalctl -u wings -f${NC}"
+
+echo ""
+echo -e "${YELLOW}Note:${NC} Tunggu 2-5 menit untuk heartbeat hijau di Panel"
